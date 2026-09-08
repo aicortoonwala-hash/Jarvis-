@@ -30,7 +30,7 @@ class MainActivity : ComponentActivity() {
         result.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { onCommand(it) }
     }
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
-        if (grants[Manifest.permission.RECORD_AUDIO] == true || hasPermission(Manifest.permission.RECORD_AUDIO)) startVoiceService()
+        if (grants[Manifest.permission.RECORD_AUDIO] == true) setStatus("Microphone ready. Tap HANDS-FREE to start.")
     }
     private val locationPermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { onLocationReady() }
     private var status: ((String) -> Unit)? = null
@@ -50,7 +50,6 @@ class MainActivity : ComponentActivity() {
         )
         if (Build.VERSION.SDK_INT >= 33) permissions += Manifest.permission.POST_NOTIFICATIONS
         if (permissions.any { !hasPermission(it) }) permissionLauncher.launch(permissions.toTypedArray())
-        else startVoiceService()
     }
 
     private fun hasPermission(permission: String): Boolean =
@@ -59,10 +58,18 @@ class MainActivity : ComponentActivity() {
     private fun setStatus(value: String) { status?.invoke(value) }
 
     private fun startVoiceService() {
-        if (!hasPermission(Manifest.permission.RECORD_AUDIO)) return
-        val intent = Intent(this, VoiceService::class.java).setAction(VoiceService.ACTION_START)
-        ContextCompat.startForegroundService(this, intent)
-        setStatus("JARVIS hands-free is ON. Say: Jarvis, ...")
+        if (!hasPermission(Manifest.permission.RECORD_AUDIO)) {
+            setStatus("Microphone permission is required.")
+            permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+            return
+        }
+        try {
+            val intent = Intent(this, VoiceService::class.java).setAction(VoiceService.ACTION_START)
+            ContextCompat.startForegroundService(this, intent)
+            setStatus("JARVIS hands-free is ON. Say: Jarvis, ...")
+        } catch (_: Exception) {
+            setStatus("Hands-free could not start. Check microphone and notification permissions.")
+        }
     }
 
     private fun stopVoiceService() {
@@ -123,7 +130,7 @@ class MainActivity : ComponentActivity() {
         var command by remember { mutableStateOf("") }
         var message by remember { mutableStateOf("JARVIS Android online") }
         var backendUrl by remember { mutableStateOf(settings.getString("backend_url", "https://jarvis-ji6k.onrender.com/chat") ?: "") }
-        var handsFree by remember { mutableStateOf(true) }
+        var handsFree by remember { mutableStateOf(false) }
         status = { message = it }
         DisposableEffect(Unit) { onDispose { status = null } }
         MaterialTheme {
