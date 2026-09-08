@@ -126,12 +126,6 @@ class MainActivity : ComponentActivity() {
         var handsFree by remember { mutableStateOf(true) }
         status = { message = it }
         DisposableEffect(Unit) { onDispose { status = null } }
-        LaunchedEffect(Unit) {
-            while (true) {
-                handsFree = hasPermission(Manifest.permission.RECORD_AUDIO)
-                kotlinx.coroutines.delay(1000)
-            }
-        }
         MaterialTheme {
             Column(Modifier.fillMaxSize().background(Color.Black).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Text("JARVIS", color = Color.Cyan, style = MaterialTheme.typography.displaySmall)
@@ -145,9 +139,15 @@ class MainActivity : ComponentActivity() {
                     }) { Text("MIC") }
                 }
                 Button(onClick = {
-                    if (!hasPermission(Manifest.permission.RECORD_AUDIO)) permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
-                    else if (handsFree) stopVoiceService() else startVoiceService()
-                    handsFree = !handsFree
+                    if (!hasPermission(Manifest.permission.RECORD_AUDIO)) {
+                        permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+                    } else if (handsFree) {
+                        stopVoiceService()
+                        handsFree = false
+                    } else {
+                        startVoiceService()
+                        handsFree = true
+                    }
                 }) { Text(if (handsFree) "HANDS-FREE ON" else "HANDS-FREE OFF") }
                 OutlinedTextField(
                     value = backendUrl,
@@ -161,7 +161,7 @@ class MainActivity : ComponentActivity() {
                     setStatus("Backend URL saved.")
                 }) { Text("SAVE BACKEND") }
                 Text(message, color = Color.Green)
-                Text("Screen off support: keep JARVIS notification active and set Battery usage to Unrestricted.", color = Color.Gray)
+                Text("Screen-off: keep the JARVIS notification active and set Battery usage to Unrestricted.", color = Color.Gray)
             }
         }
     }
