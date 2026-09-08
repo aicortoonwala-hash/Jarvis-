@@ -1,9 +1,11 @@
 package com.aicortoonwala.jarvis
 
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -12,7 +14,10 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -50,11 +55,15 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) stopVoice() else startVoice()
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private fun startVoice() {
         if (active) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            stopSelf()
+            return
+        }
         active = true
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("JARVIS is listening")
@@ -63,10 +72,16 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (_: SecurityException) {
+            active = false
+            stopSelf()
+            return
         }
         createRecognizer()
         scheduleListening(300)
@@ -130,20 +145,48 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
     private fun speak(text: String) {
         if (!active) return
         speaking = true
-        if (ttsReady) tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "jarvis_service")
-        else { speaking = false; scheduleListening() }
+        if (ttsReady) {
+            val polished = text.replace(Regex("\\s+"), " ").trim()
+            tts.speak(polished, TextToSpeech.QUEUE_FLUSH, null, "jarvis_service")
+        } else {
+            speaking = false
+            scheduleListening()
+        }
     }
 
     override fun onInit(status: Int) {
         ttsReady = status == TextToSpeech.SUCCESS
-        if (ttsReady) {
-            tts.language = Locale.getDefault()
-            tts.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) = Unit
-                override fun onError(utteranceId: String?) { handler.post { speaking = false; scheduleListening(700) } }
-                override fun onDone(utteranceId: String?) { handler.post { speaking = false; scheduleListening(500) } }
-            })
+        if (!ttsReady) return
+
+        try {
+            val jarvisLocale = Locale.US
+            tts.language = jarvisLocale
+            tts.setSpeechRate(0.86f)
+            tts.setPitch(0.72f)
+            if (Build.VERSION.SDK_INT >= 21) {
+                val voices = tts.voices.orEmpty()
+                val candidates = voices
+                    .filter { it.locale.language == "en" && it.locale.country.equals("US", true) }
+                    .sortedWith(compareByDescending<Voice> {
+                        val n = it.name.lowercase(Locale.US)
+                        when {
+                            n.contains("male") || n.contains("man") || n.contains("m1") -> 4
+                            n.contains("local") -> 3
+                            it.quality >= Voice.QUALITY_NORMAL -> 2
+                            else -> 1
+                        }
+                    })
+                candidates.firstOrNull()?.let { tts.voice = it }
+            }
+        } catch (_: Exception) {
+            try { tts.language = Locale.US } catch (_: Exception) { }
         }
+
+        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) = Unit
+            override fun onError(utteranceId: String?) { handler.post { speaking = false; scheduleListening(700) } }
+            override fun onDone(utteranceId: String?) { handler.post { speaking = false; scheduleListening(500) } }
+        })
     }
 
     private val listener = object : RecognitionListener {
