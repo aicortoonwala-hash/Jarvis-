@@ -14,17 +14,15 @@ class CommandRouter(private val context: Context, private val memory: MemoryStor
         val original = command.trim()
         val c = original.lowercase()
         return when {
+            isYouTubeSearch(c) -> youtubeSearch(original)
+            isWebSearch(c) -> webSearch(original)
             c == "google" || c.contains("open google") -> { open("https://www.google.com"); "Opening Google." }
             c == "youtube" || c.contains("open youtube") -> { open("https://www.youtube.com"); "Opening YouTube." }
             c.contains("camera") || c.contains("take photo") || c.contains("take a photo") -> openCamera()
             c.contains("maps") || c.contains("google maps") || c.startsWith("navigate to ") || c.startsWith("directions to ") -> openMaps(original)
-            c.startsWith("call ") || c.startsWith("dial ") -> callContactOrNumber(original.substringAfter(" ").trim())
+            c.startsWith("call ") || c.startsWith("dial ") || c.startsWith("call karo ") || c.startsWith("call kar do ") -> callContactOrNumber(original.substringAfter(" ").trim().removePrefix("karo ").removePrefix("kar do "))
             c.startsWith("sms ") || c.startsWith("text ") || c.startsWith("send sms ") -> composeSms(original)
             c.startsWith("whatsapp ") || c.contains("open whatsapp") -> openWhatsApp()
-            c.startsWith("search ") || c.startsWith("google search ") -> {
-                val q = if (c.startsWith("google search ")) original.substring(14).trim() else original.substring(7).trim()
-                if (q.isBlank()) "What should I search for?" else { open("https://www.google.com/search?q=" + Uri.encode(q)); "Searching for $q." }
-            }
             c.contains("settings") -> {
                 context.startActivity(Intent(android.provider.Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); "Opening settings."
             }
@@ -34,6 +32,60 @@ class CommandRouter(private val context: Context, private val memory: MemoryStor
             c.contains("hello") || c.contains("hi jarvis") || c == "hi" -> "Hello. JARVIS is online and ready."
             else -> "I heard: $original. Connect Gemini backend for full AI answers."
         }
+    }
+
+    private fun isYouTubeSearch(c: String): Boolean =
+        c.startsWith("youtube search ") ||
+        c.startsWith("search youtube ") ||
+        c.contains("youtube par ") ||
+        c.contains("youtube pe ")
+
+    private fun youtubeSearch(original: String): String {
+        val lower = original.lowercase()
+        val query = when {
+            lower.startsWith("youtube search ") -> original.substring(15).trim()
+            lower.startsWith("search youtube ") -> original.substring(15).trim()
+            lower.contains("youtube par ") -> original.substring(lower.indexOf("youtube par ") + 12).trim()
+            lower.contains("youtube pe ") -> original.substring(lower.indexOf("youtube pe ") + 11).trim()
+            else -> ""
+        }
+            .replace(Regex("\\s+(search|karo|kar do|karna|please)$", RegexOption.IGNORE_CASE), "")
+            .trim()
+
+        if (query.isBlank()) {
+            open("https://www.youtube.com")
+            return "Opening YouTube."
+        }
+
+        open("https://www.youtube.com/results?search_query=" + Uri.encode(query))
+        return "Searching YouTube for $query."
+    }
+
+    private fun isWebSearch(c: String): Boolean =
+        c.startsWith("search ") ||
+        c.startsWith("google search ") ||
+        c.startsWith("search karo ") ||
+        c.startsWith("search kar ") ||
+        c.contains("google par ") ||
+        c.contains("google pe ")
+
+    private fun webSearch(original: String): String {
+        val lower = original.lowercase()
+        val query = when {
+            lower.startsWith("google search ") -> original.substring(14).trim()
+            lower.startsWith("search karo ") -> original.substring(12).trim()
+            lower.startsWith("search kar ") -> original.substring(11).trim()
+            lower.startsWith("search ") -> original.substring(7).trim()
+            lower.contains("google par ") -> original.substring(lower.indexOf("google par ") + 11).trim()
+            lower.contains("google pe ") -> original.substring(lower.indexOf("google pe ") + 10).trim()
+            else -> ""
+        }
+            .replace(Regex("\\s+(search|karo|kar do|karna|please)$", RegexOption.IGNORE_CASE), "")
+            .trim()
+
+        if (query.isBlank()) return "What should I search for?"
+        open("https://www.google.com/search?q=" + Uri.encode(query))
+        return "Searching Google for $query."
     }
 
     private fun openCamera(): String = try {
