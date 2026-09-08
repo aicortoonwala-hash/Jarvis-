@@ -1,7 +1,9 @@
 package com.aicortoonwala.jarvis
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -27,8 +29,8 @@ class MainActivity : ComponentActivity() {
     private val speech = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         result.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { onCommand(it) }
     }
-    private val audioPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) startHandsFree()
+    private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        if (grants[Manifest.permission.RECORD_AUDIO] == true || hasPermission(Manifest.permission.RECORD_AUDIO)) startVoiceService()
     }
     private val locationPermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { onLocationReady() }
     private var status: ((String) -> Unit)? = null
@@ -40,22 +42,32 @@ class MainActivity : ComponentActivity() {
         location = LocationHelper(this)
         router = CommandRouter(this, memory)
         setContent { JarvisApp() }
-        window.decorView.post {
-            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                startHandsFree()
-            } else {
-                audioPermission.launch(Manifest.permission.RECORD_AUDIO)
-            }
-        }
+
+        val permissions = mutableListOf(
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.CALL_PHONE,
+            Manifest.permission.READ_CONTACTS
+        )
+        if (Build.VERSION.SDK_INT >= 33) permissions += Manifest.permission.POST_NOTIFICATIONS
+        if (permissions.any { !hasPermission(it) }) permissionLauncher.launch(permissions.toTypedArray())
+        else startVoiceService()
     }
+
+    private fun hasPermission(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
     private fun setStatus(value: String) { status?.invoke(value) }
 
-    private fun startHandsFree() {
-        voice.startHandsFree(
-            command = { onCommand(it) },
-            status = { setStatus(it) }
-        )
+    private fun startVoiceService() {
+        if (!hasPermission(Manifest.permission.RECORD_AUDIO)) return
+        val intent = Intent(this, VoiceService::class.java).setAction(VoiceService.ACTION_START)
+        ContextCompat.startForegroundService(this, intent)
+        setStatus("JARVIS hands-free is ON. Say: Jarvis, ...")
+    }
+
+    private fun stopVoiceService() {
+        startService(Intent(this, VoiceService::class.java).setAction(VoiceService.ACTION_STOP))
+        setStatus("Hands-free off")
     }
 
     private fun onCommand(command: String) {
@@ -69,7 +81,7 @@ class MainActivity : ComponentActivity() {
         }
         setStatus("Thinking...")
         lifecycleScope.launch {
-            val reply = AiClient(settings.getString("backend_url", "http://10.0.2.2:8080/chat").orEmpty())
+            val reply = AiClient(settings.getString("backend_url", "https://jarvis-ji6k.onrender.com/chat").orEmpty())
                 .ask(command, memory.all())
             setStatus(reply)
             voice.speak(reply)
@@ -101,26 +113,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun onLocationReady() {
-        if (hasLocationPermission()) getWeather()
-    }
+    private fun onLocationReady() { if (hasLocationPermission()) getWeather() }
 
     private fun hasLocationPermission(): Boolean =
-        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION) || hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
 
     @Composable
     private fun JarvisApp() {
         var command by remember { mutableStateOf("") }
         var message by remember { mutableStateOf("JARVIS Android online") }
-        var backendUrl by remember { mutableStateOf(settings.getString("backend_url", "http://10.0.2.2:8080/chat") ?: "") }
-        var handsFree by remember { mutableStateOf(false) }
+        var backendUrl by remember { mutableStateOf(settings.getString("backend_url", "https://jarvis-ji6k.onrender.com/chat") ?: "") }
+        var handsFree by remember { mutableStateOf(true) }
         status = { message = it }
         DisposableEffect(Unit) { onDispose { status = null } }
         LaunchedEffect(Unit) {
             while (true) {
-                handsFree = voice.isHandsFree()
-                kotlinx.coroutines.delay(500)
+                handsFree = hasPermission(Manifest.permission.RECORD_AUDIO)
+                kotlinx.coroutines.delay(1000)
             }
         }
         MaterialTheme {
@@ -131,21 +140,15 @@ class MainActivity : ComponentActivity() {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(onClick = { if (command.isNotBlank()) onCommand(command) }) { Text("EXECUTE") }
                     Button(onClick = {
-                        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) speech.launch(voice.intent())
-                        else audioPermission.launch(Manifest.permission.RECORD_AUDIO)
+                        if (hasPermission(Manifest.permission.RECORD_AUDIO)) speech.launch(voice.intent())
+                        else permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
                     }) { Text("MIC") }
                 }
                 Button(onClick = {
-                    if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                        audioPermission.launch(Manifest.permission.RECORD_AUDIO)
-                    } else if (voice.isHandsFree()) {
-                        voice.stopHandsFree()
-                    } else {
-                        startHandsFree()
-                    }
-                }) {
-                    Text(if (handsFree) "HANDS-FREE ON" else "HANDS-FREE OFF")
-                }
+                    if (!hasPermission(Manifest.permission.RECORD_AUDIO)) permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+                    else if (handsFree) stopVoiceService() else startVoiceService()
+                    handsFree = !handsFree
+                }) { Text(if (handsFree) "HANDS-FREE ON" else "HANDS-FREE OFF") }
                 OutlinedTextField(
                     value = backendUrl,
                     onValueChange = { backendUrl = it },
@@ -158,7 +161,7 @@ class MainActivity : ComponentActivity() {
                     setStatus("Backend URL saved.")
                 }) { Text("SAVE BACKEND") }
                 Text(message, color = Color.Green)
-                Text("Hands-free mode: say 'Jarvis, ...' for a command.", color = Color.Gray)
+                Text("Screen off support: keep JARVIS notification active and set Battery usage to Unrestricted.", color = Color.Gray)
             }
         }
     }
