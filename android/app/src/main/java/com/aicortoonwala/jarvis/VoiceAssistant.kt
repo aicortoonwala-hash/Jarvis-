@@ -2,21 +2,40 @@ package com.aicortoonwala.jarvis
 
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
+import android.os.Handler
+import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import java.util.Locale
 
-class VoiceAssistant(context: Context) : TextToSpeech.OnInitListener {
+class VoiceAssistant(private val context: Context) : TextToSpeech.OnInitListener {
     private val tts = TextToSpeech(context, this)
     private var ready = false
+    private var handsFree = false
+    private var recognizer: SpeechRecognizer? = null
+    private var onCommand: ((String) -> Unit)? = null
+    private var onStatus: ((String) -> Unit)? = null
 
     override fun onInit(status: Int) {
         ready = status == TextToSpeech.SUCCESS
-        if (ready) tts.language = Locale.getDefault()
+        if (ready) {
+            tts.language = Locale.getDefault()
+            tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) = Unit
+                override fun onError(utteranceId: String?) = Unit
+                override fun onDone(utteranceId: String?) {
+                    if (handsFree) Handler(context.mainLooper).postDelayed({ startListening() }, 500)
+                }
+            })
+        }
     }
 
     fun speak(text: String) {
         if (ready) tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "jarvis")
+        else if (handsFree) scheduleRestart()
     }
 
     fun intent(): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -25,5 +44,78 @@ class VoiceAssistant(context: Context) : TextToSpeech.OnInitListener {
         putExtra(RecognizerIntent.EXTRA_PROMPT, "JARVIS is listening...")
     }
 
-    fun close() = tts.shutdown()
+    fun startHandsFree(command: (String) -> Unit, status: (String) -> Unit) {
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+            status("Voice recognition is not available on this phone.")
+            return
+        }
+        onCommand = command
+        onStatus = status
+        handsFree = true
+        recognizer?.destroy()
+        recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+            setRecognitionListener(listener)
+        }
+        startListening()
+    }
+
+    fun stopHandsFree() {
+        handsFree = false
+        recognizer?.stopListening()
+        recognizer?.destroy()
+        recognizer = null
+        onStatus?.invoke("Hands-free off")
+    }
+
+    fun isHandsFree(): Boolean = handsFree
+
+    private fun startListening() {
+        if (!handsFree) return
+        val r = recognizer ?: return
+        try {
+            r.startListening(intent())
+            onStatus?.invoke("Hands-free: listening for JARVIS...")
+        } catch (_: Exception) {
+            scheduleRestart()
+        }
+    }
+
+    private fun scheduleRestart() {
+        if (handsFree) Handler(context.mainLooper).postDelayed({ startListening() }, 1000)
+    }
+
+    private val listener = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) = Unit
+        override fun onBeginningOfSpeech() = Unit
+        override fun onRmsChanged(rmsdB: Float) = Unit
+        override fun onBufferReceived(buffer: ByteArray?) = Unit
+        override fun onEndOfSpeech() = Unit
+        override fun onPartialResults(partialResults: Bundle?) = Unit
+        override fun onEvent(eventType: Int, params: Bundle?) = Unit
+
+        override fun onResults(results: Bundle?) {
+            val heard = results?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.trim().orEmpty()
+            val lower = heard.lowercase(Locale.getDefault())
+            val marker = lower.indexOf("jarvis")
+            if (marker >= 0) {
+                val command = heard.substring(marker + "jarvis".length).trim(' ', ',', '.', '!', '?')
+                if (command.isNotBlank()) {
+                    onCommand?.invoke(command)
+                    return
+                }
+            }
+            scheduleRestart()
+        }
+
+        override fun onError(error: Int) {
+            scheduleRestart()
+        }
+    }
+
+    fun close() {
+        handsFree = false
+        recognizer?.destroy()
+        recognizer = null
+        tts.shutdown()
+    }
 }
