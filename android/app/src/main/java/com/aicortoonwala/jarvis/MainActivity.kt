@@ -23,7 +23,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var memory: MemoryStore
     private val weather = WeatherClient()
     private lateinit var location: LocationHelper
-    private val ai = AiClient("http://10.0.2.2:8080/chat")
+    private val settings by lazy { getSharedPreferences("jarvis_settings", MODE_PRIVATE) }
     private val speech = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         result.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { onCommand(it) }
     }
@@ -54,7 +54,8 @@ class MainActivity : ComponentActivity() {
         }
         setStatus("Thinking...")
         lifecycleScope.launch {
-            val reply = ai.ask(command)
+            val reply = AiClient(settings.getString("backend_url", "http://10.0.2.2:8080/chat").orEmpty())
+                .ask(command, memory.all())
             setStatus(reply)
             voice.speak(reply)
         }
@@ -97,12 +98,13 @@ class MainActivity : ComponentActivity() {
     private fun JarvisApp() {
         var command by remember { mutableStateOf("") }
         var message by remember { mutableStateOf("JARVIS Android online") }
+        var backendUrl by remember { mutableStateOf(settings.getString("backend_url", "http://10.0.2.2:8080/chat") ?: "") }
         status = { message = it }
         DisposableEffect(Unit) { onDispose { status = null } }
         MaterialTheme {
-            Column(Modifier.fillMaxSize().background(Color.Black).padding(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Column(Modifier.fillMaxSize().background(Color.Black).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Text("JARVIS", color = Color.Cyan, style = MaterialTheme.typography.displaySmall)
-                Text("Android edition • AI online", color = Color.LightGray)
+                Text("Android edition • Hybrid AI", color = Color.LightGray)
                 OutlinedTextField(command, { command = it }, Modifier.fillMaxWidth(), label = { Text("Ask JARVIS") }, singleLine = true)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(onClick = { if (command.isNotBlank()) onCommand(command) }) { Text("EXECUTE") }
@@ -111,6 +113,17 @@ class MainActivity : ComponentActivity() {
                         else audioPermission.launch(Manifest.permission.RECORD_AUDIO)
                     }) { Text("MIC") }
                 }
+                OutlinedTextField(
+                    value = backendUrl,
+                    onValueChange = { backendUrl = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("AI backend URL") },
+                    singleLine = true
+                )
+                Button(onClick = {
+                    settings.edit().putString("backend_url", backendUrl.trim()).apply()
+                    setStatus("Backend URL saved.")
+                }) { Text("SAVE BACKEND") }
                 Text(message, color = Color.Green)
                 Text("Try: 'remember name is Alex', 'what is my name?', or 'weather'.", color = Color.Gray)
             }
