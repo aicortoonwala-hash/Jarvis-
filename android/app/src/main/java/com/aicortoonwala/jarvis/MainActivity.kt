@@ -13,22 +13,30 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private lateinit var voice: VoiceAssistant
     private lateinit var router: CommandRouter
+    private lateinit var memory: MemoryStore
+    private val weather = WeatherClient()
+    private lateinit var location: LocationHelper
     private val ai = AiClient("http://10.0.2.2:8080/chat")
     private val speech = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         result.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { onCommand(it) }
     }
     private val audioPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val locationPermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { onLocationReady() }
     private var status: ((String) -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         voice = VoiceAssistant(this)
-        router = CommandRouter(this)
+        memory = MemoryStore(this)
+        location = LocationHelper(this)
+        router = CommandRouter(this, memory)
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) audioPermission.launch(Manifest.permission.RECORD_AUDIO)
         setContent { JarvisApp() }
     }
@@ -40,13 +48,50 @@ class MainActivity : ComponentActivity() {
         if (!local.startsWith("I heard:")) {
             setStatus(local); voice.speak(local); return
         }
+        if (isWeatherCommand(command)) {
+            getWeather()
+            return
+        }
         setStatus("Thinking...")
-        kotlinx.coroutines.MainScope().launch {
+        lifecycleScope.launch {
             val reply = ai.ask(command)
             setStatus(reply)
             voice.speak(reply)
         }
     }
+
+    private fun isWeatherCommand(command: String): Boolean {
+        val c = command.lowercase()
+        return c.contains("weather") || c.contains("temperature") || c.contains("mausam") || c.contains("taapman")
+    }
+
+    private fun getWeather() {
+        if (!hasLocationPermission()) {
+            setStatus("Location permission is needed for local weather.")
+            locationPermission.launch(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION))
+            return
+        }
+        val coords = location.lastLocation()
+        if (coords == null) {
+            setStatus("I can't get your phone location yet. Turn on Location and try again.")
+            voice.speak("I can't get your phone location yet.")
+            return
+        }
+        setStatus("Getting current weather...")
+        lifecycleScope.launch {
+            val reply = weather.current(coords.first, coords.second)
+            setStatus(reply)
+            voice.speak(reply)
+        }
+    }
+
+    private fun onLocationReady() {
+        if (hasLocationPermission()) getWeather()
+    }
+
+    private fun hasLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     @Composable
     private fun JarvisApp() {
@@ -67,7 +112,7 @@ class MainActivity : ComponentActivity() {
                     }) { Text("MIC") }
                 }
                 Text(message, color = Color.Green)
-                Text("AI backend URL can be changed in MainActivity.kt. Keep Gemini keys on the server.", color = Color.Gray)
+                Text("Try: 'remember name is Alex', 'what is my name?', or 'weather'.", color = Color.Gray)
             }
         }
     }
