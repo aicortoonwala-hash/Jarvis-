@@ -100,7 +100,10 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
 
         if (isNiftyCommand(command)) {
             speak("Checking Nifty now.")
-            Thread { handler.post { speak(market.niftyPrice()) } }.start()
+            Thread {
+                val reply = market.niftyPrice()
+                handler.post { speak(reply) }
+            }.start()
             return
         }
 
