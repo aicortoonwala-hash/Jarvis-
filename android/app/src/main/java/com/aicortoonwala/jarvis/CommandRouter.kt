@@ -3,6 +3,7 @@ package com.aicortoonwala.jarvis
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.MediaStore
 
 class CommandRouter(private val context: Context, private val memory: MemoryStore) {
     fun execute(command: String): String {
@@ -11,8 +12,13 @@ class CommandRouter(private val context: Context, private val memory: MemoryStor
         return when {
             c == "google" || c.contains("open google") -> { open("https://www.google.com"); "Opening Google." }
             c == "youtube" || c.contains("open youtube") -> { open("https://www.youtube.com"); "Opening YouTube." }
+            c.contains("camera") || c.contains("take photo") || c.contains("take a photo") -> openCamera()
+            c.contains("maps") || c.contains("google maps") || c.startsWith("navigate to ") || c.startsWith("directions to ") -> openMaps(original)
+            c.startsWith("call ") || c.startsWith("dial ") -> dial(original.substringAfter(" ").trim())
+            c.startsWith("sms ") || c.startsWith("text ") || c.startsWith("send sms ") -> composeSms(original)
+            c.startsWith("whatsapp ") || c.contains("open whatsapp") -> openWhatsApp()
             c.startsWith("search ") || c.startsWith("google search ") -> {
-                val q = original.substringAfter("search ", original.substringAfter("google search ", "")).trim()
+                val q = if (c.startsWith("google search ")) original.substring(14).trim() else original.substring(7).trim()
                 if (q.isBlank()) "What should I search for?" else { open("https://www.google.com/search?q=" + Uri.encode(q)); "Searching for $q." }
             }
             c.contains("settings") -> {
@@ -26,6 +32,42 @@ class CommandRouter(private val context: Context, private val memory: MemoryStor
         }
     }
 
+    private fun openCamera(): String = try {
+        context.startActivity(Intent(MediaStore.ACTION_IMAGE_CAPTURE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        "Opening camera."
+    } catch (_: Exception) { "Camera app is not available." }
+
+    private fun openMaps(original: String): String {
+        val query = original.substringAfter("to ", "").trim()
+        val uri = if (query.isBlank()) Uri.parse("geo:0,0?q=Google+Maps") else Uri.parse("geo:0,0?q=" + Uri.encode(query))
+        return try {
+            context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            "Opening maps${if (query.isNotBlank()) " for $query" else ""}."
+        } catch (_: Exception) { open("https://www.google.com/maps"); "Opening maps." }
+    }
+
+    private fun dial(number: String): String {
+        if (number.isBlank()) return "Tell me the phone number to dial."
+        context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(number))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        return "Opening the dialer for $number."
+    }
+
+    private fun composeSms(original: String): String {
+        val text = original.substringAfter(" ").trim()
+        if (text.isBlank()) return "Tell me the phone number and message."
+        context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:")).apply {
+            putExtra("sms_body", text)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
+        return "Opening SMS composer."
+    }
+
+    private fun openWhatsApp(): String = try {
+        context.startActivity(context.packageManager.getLaunchIntentForPackage("com.whatsapp")?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            ?: Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        "Opening WhatsApp."
+    } catch (_: Exception) { "WhatsApp is not available." }
+
     private fun rememberCommand(text: String): String {
         val parts = text.split(" is ", limit = 2)
         if (parts.size != 2 || parts[0].isBlank() || parts[1].isBlank()) return "Tell me what to remember, for example: remember name is Alex."
@@ -34,10 +76,7 @@ class CommandRouter(private val context: Context, private val memory: MemoryStor
     }
 
     private fun recallCommand(original: String): String {
-        val key = original.lowercase()
-            .removePrefix("what is my ")
-            .removePrefix("recall ")
-            .trim()
+        val key = original.lowercase().removePrefix("what is my ").removePrefix("recall ").trim()
         if (key.isBlank() || key == "what do you remember") {
             val all = memory.all()
             return if (all.isEmpty()) "I don't have any saved memories yet." else "I remember: " + all.entries.joinToString(", ") { "${it.key} is ${it.value}" } + "."
