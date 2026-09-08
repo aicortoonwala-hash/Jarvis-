@@ -13,6 +13,12 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 class VoiceService : Service(), TextToSpeech.OnInitListener {
@@ -32,6 +38,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
     private lateinit var router: CommandRouter
     private lateinit var memory: MemoryStore
     private val market = MarketClient()
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
         super.onCreate()
@@ -100,19 +107,19 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
 
         if (isNiftyCommand(command)) {
             speak("Checking Nifty now.")
-            Thread {
+            serviceScope.launch {
                 val reply = market.niftyPrice()
-                handler.post { speak(reply) }
-            }.start()
+                withContext(Dispatchers.Main) { speak(reply) }
+            }
             return
         }
 
-        Thread {
+        serviceScope.launch {
             val backend = getSharedPreferences("jarvis_settings", MODE_PRIVATE)
                 .getString("backend_url", "https://jarvis-ji6k.onrender.com/chat").orEmpty()
             val reply = AiClient(backend).ask(command, memory.all())
-            handler.post { speak(reply) }
-        }.start()
+            withContext(Dispatchers.Main) { speak(reply) }
+        }
     }
 
     private fun isNiftyCommand(command: String): Boolean {
@@ -178,6 +185,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         handler.removeCallbacksAndMessages(null)
         recognizer?.destroy()
         recognizer = null
+        serviceScope.cancel()
         tts.shutdown()
         super.onDestroy()
     }
