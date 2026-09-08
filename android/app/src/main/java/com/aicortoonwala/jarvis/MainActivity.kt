@@ -27,7 +27,9 @@ class MainActivity : ComponentActivity() {
     private val speech = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         result.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { onCommand(it) }
     }
-    private val audioPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val audioPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startHandsFree()
+    }
     private val locationPermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { onLocationReady() }
     private var status: ((String) -> Unit)? = null
 
@@ -37,11 +39,24 @@ class MainActivity : ComponentActivity() {
         memory = MemoryStore(this)
         location = LocationHelper(this)
         router = CommandRouter(this, memory)
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) audioPermission.launch(Manifest.permission.RECORD_AUDIO)
         setContent { JarvisApp() }
+        window.decorView.post {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                startHandsFree()
+            } else {
+                audioPermission.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
     }
 
     private fun setStatus(value: String) { status?.invoke(value) }
+
+    private fun startHandsFree() {
+        voice.startHandsFree(
+            command = { onCommand(it) },
+            status = { setStatus(it) }
+        )
+    }
 
     private fun onCommand(command: String) {
         val local = router.execute(command)
@@ -99,8 +114,15 @@ class MainActivity : ComponentActivity() {
         var command by remember { mutableStateOf("") }
         var message by remember { mutableStateOf("JARVIS Android online") }
         var backendUrl by remember { mutableStateOf(settings.getString("backend_url", "http://10.0.2.2:8080/chat") ?: "") }
+        var handsFree by remember { mutableStateOf(false) }
         status = { message = it }
         DisposableEffect(Unit) { onDispose { status = null } }
+        LaunchedEffect(Unit) {
+            while (true) {
+                handsFree = voice.isHandsFree()
+                kotlinx.coroutines.delay(500)
+            }
+        }
         MaterialTheme {
             Column(Modifier.fillMaxSize().background(Color.Black).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Text("JARVIS", color = Color.Cyan, style = MaterialTheme.typography.displaySmall)
@@ -112,6 +134,17 @@ class MainActivity : ComponentActivity() {
                         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) speech.launch(voice.intent())
                         else audioPermission.launch(Manifest.permission.RECORD_AUDIO)
                     }) { Text("MIC") }
+                }
+                Button(onClick = {
+                    if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                        audioPermission.launch(Manifest.permission.RECORD_AUDIO)
+                    } else if (voice.isHandsFree()) {
+                        voice.stopHandsFree()
+                    } else {
+                        startHandsFree()
+                    }
+                }) {
+                    Text(if (handsFree) "HANDS-FREE ON" else "HANDS-FREE OFF")
                 }
                 OutlinedTextField(
                     value = backendUrl,
@@ -125,7 +158,7 @@ class MainActivity : ComponentActivity() {
                     setStatus("Backend URL saved.")
                 }) { Text("SAVE BACKEND") }
                 Text(message, color = Color.Green)
-                Text("Try: 'remember name is Alex', 'what is my name?', or 'weather'.", color = Color.Gray)
+                Text("Hands-free mode: say 'Jarvis, ...' for a command.", color = Color.Gray)
             }
         }
     }
