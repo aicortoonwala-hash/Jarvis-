@@ -1,9 +1,13 @@
 package com.aicortoonwala.jarvis
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.provider.ContactsContract
 import android.provider.MediaStore
+import androidx.core.content.ContextCompat
 
 class CommandRouter(private val context: Context, private val memory: MemoryStore) {
     fun execute(command: String): String {
@@ -14,7 +18,7 @@ class CommandRouter(private val context: Context, private val memory: MemoryStor
             c == "youtube" || c.contains("open youtube") -> { open("https://www.youtube.com"); "Opening YouTube." }
             c.contains("camera") || c.contains("take photo") || c.contains("take a photo") -> openCamera()
             c.contains("maps") || c.contains("google maps") || c.startsWith("navigate to ") || c.startsWith("directions to ") -> openMaps(original)
-            c.startsWith("call ") || c.startsWith("dial ") -> dial(original.substringAfter(" ").trim())
+            c.startsWith("call ") || c.startsWith("dial ") -> callContactOrNumber(original.substringAfter(" ").trim())
             c.startsWith("sms ") || c.startsWith("text ") || c.startsWith("send sms ") -> composeSms(original)
             c.startsWith("whatsapp ") || c.contains("open whatsapp") -> openWhatsApp()
             c.startsWith("search ") || c.startsWith("google search ") -> {
@@ -46,10 +50,34 @@ class CommandRouter(private val context: Context, private val memory: MemoryStor
         } catch (_: Exception) { open("https://www.google.com/maps"); "Opening maps." }
     }
 
-    private fun dial(number: String): String {
-        if (number.isBlank()) return "Tell me the phone number to dial."
-        context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(number))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        return "Opening the dialer for $number."
+    private fun callContactOrNumber(nameOrNumber: String): String {
+        if (nameOrNumber.isBlank()) return "Tell me who to call."
+        val number = findContactNumber(nameOrNumber)
+        val target = number ?: nameOrNumber
+        return try {
+            if (number != null && ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
+                context.startActivity(Intent(Intent.ACTION_CALL, Uri.parse("tel:" + Uri.encode(target))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                "Calling $nameOrNumber."
+            } else {
+                context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(target))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                "Opening the dialer for $nameOrNumber."
+            }
+        } catch (_: Exception) { "I couldn't start the call." }
+    }
+
+    private fun findContactNumber(name: String): String? {
+        return try {
+            val projection = arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER)
+            val selection = "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ?"
+            val args = arrayOf("%$name%")
+            context.contentResolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                projection,
+                selection,
+                args,
+                null
+            )?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+        } catch (_: Exception) { null }
     }
 
     private fun composeSms(original: String): String {
