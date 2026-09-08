@@ -61,8 +61,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
     private fun startVoice() {
         if (active) return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            stopSelf()
-            return
+            stopSelf(); return
         }
         active = true
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -73,15 +72,10 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
         try {
-            if (Build.VERSION.SDK_INT >= 29) {
-                startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
-            }
+            if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            else startForeground(NOTIFICATION_ID, notification)
         } catch (_: SecurityException) {
-            active = false
-            stopSelf()
-            return
+            active = false; stopSelf(); return
         }
         createRecognizer()
         scheduleListening(300)
@@ -100,7 +94,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
 
     private fun startListening() {
         if (!active || speaking) return
-        val r = recognizer ?: return
+        val r = recognizer ?: run { createRecognizer(); recognizer } ?: return
         try {
             r.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -120,10 +114,10 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         val local = router.execute(command)
         if (!local.startsWith("I heard:")) { speak(local); return }
 
-        if (isNiftyCommand(command)) {
-            speak("Checking Nifty now.")
+        if (isMarketCommand(command)) {
+            speak("Checking the market now.")
             serviceScope.launch {
-                val reply = market.niftyPrice()
+                val reply = market.quoteFor(command)
                 withContext(Dispatchers.Main) { speak(reply) }
             }
             return
@@ -137,9 +131,11 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun isNiftyCommand(command: String): Boolean {
+    private fun isMarketCommand(command: String): Boolean {
         val c = command.lowercase(Locale.getDefault())
-        return c.contains("nifty") || c.contains("nse")
+        return listOf("share price", "stock price", "share bhav", "stock bhav", "share ka price", "stock ka price", "share rate", "stock rate", "share value").any { c.contains(it) }
+            || c.matches(Regex(".*\\b(price|bhav|rate)\\b.*\\b(share|stock|nifty|sensex)\\b.*"))
+            || c.matches(Regex(".*\\b(share|stock)\\b.*\\b(price|bhav|rate)\\b.*"))
     }
 
     private fun speak(text: String) {
@@ -149,23 +145,19 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
             val polished = text.replace(Regex("\\s+"), " ").trim()
             tts.speak(polished, TextToSpeech.QUEUE_FLUSH, null, "jarvis_service")
         } else {
-            speaking = false
-            scheduleListening()
+            speaking = false; scheduleListening()
         }
     }
 
     override fun onInit(status: Int) {
         ttsReady = status == TextToSpeech.SUCCESS
         if (!ttsReady) return
-
         try {
-            val jarvisLocale = Locale.US
-            tts.language = jarvisLocale
+            tts.language = Locale.US
             tts.setSpeechRate(0.86f)
             tts.setPitch(0.72f)
             if (Build.VERSION.SDK_INT >= 21) {
-                val voices = tts.voices.orEmpty()
-                val candidates = voices
+                tts.voices.orEmpty()
                     .filter { it.locale.language == "en" && it.locale.country.equals("US", true) }
                     .sortedWith(compareByDescending<Voice> {
                         val n = it.name.lowercase(Locale.US)
@@ -175,13 +167,9 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
                             it.quality >= Voice.QUALITY_NORMAL -> 2
                             else -> 1
                         }
-                    })
-                candidates.firstOrNull()?.let { tts.voice = it }
+                    }).firstOrNull()?.let { tts.voice = it }
             }
-        } catch (_: Exception) {
-            try { tts.language = Locale.US } catch (_: Exception) { }
-        }
-
+        } catch (_: Exception) { try { tts.language = Locale.US } catch (_: Exception) { } }
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) = Unit
             override fun onError(utteranceId: String?) { handler.post { speaking = false; scheduleListening(700) } }
@@ -205,31 +193,22 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun stopVoice() {
-        active = false
-        speaking = false
+        active = false; speaking = false
         handler.removeCallbacksAndMessages(null)
-        recognizer?.destroy()
-        recognizer = null
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        recognizer?.destroy(); recognizer = null
+        stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
     }
 
     private fun createChannel() {
-        if (Build.VERSION.SDK_INT >= 26) {
-            val channel = NotificationChannel(CHANNEL_ID, "JARVIS voice assistant", NotificationManager.IMPORTANCE_LOW)
-            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-        }
+        if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager::class.java)
+            .createNotificationChannel(NotificationChannel(CHANNEL_ID, "JARVIS voice assistant", NotificationManager.IMPORTANCE_LOW))
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        active = false
-        handler.removeCallbacksAndMessages(null)
-        recognizer?.destroy()
-        recognizer = null
-        serviceScope.cancel()
-        tts.shutdown()
-        super.onDestroy()
+        active = false; handler.removeCallbacksAndMessages(null)
+        recognizer?.destroy(); recognizer = null
+        serviceScope.cancel(); tts.shutdown(); super.onDestroy()
     }
 }
