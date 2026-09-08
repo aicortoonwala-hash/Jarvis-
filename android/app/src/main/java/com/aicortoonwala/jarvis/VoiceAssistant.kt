@@ -2,6 +2,7 @@ package com.aicortoonwala.jarvis
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.speech.RecognitionListener
@@ -9,6 +10,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
 import java.util.Locale
 
 class VoiceAssistant(private val context: Context) : TextToSpeech.OnInitListener {
@@ -21,20 +23,40 @@ class VoiceAssistant(private val context: Context) : TextToSpeech.OnInitListener
 
     override fun onInit(status: Int) {
         ready = status == TextToSpeech.SUCCESS
-        if (ready) {
-            tts.language = Locale.getDefault()
-            tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) = Unit
-                override fun onError(utteranceId: String?) = Unit
-                override fun onDone(utteranceId: String?) {
-                    if (handsFree) Handler(context.mainLooper).postDelayed({ startListening() }, 500)
-                }
-            })
+        if (!ready) return
+        try {
+            tts.language = Locale.US
+            tts.setSpeechRate(0.86f)
+            tts.setPitch(0.72f)
+            if (Build.VERSION.SDK_INT >= 21) {
+                val voices = tts.voices.orEmpty()
+                val candidates = voices
+                    .filter { it.locale.language == "en" && it.locale.country.equals("US", true) }
+                    .sortedWith(compareByDescending<Voice> {
+                        val n = it.name.lowercase(Locale.US)
+                        when {
+                            n.contains("male") || n.contains("man") || n.contains("m1") -> 4
+                            n.contains("local") -> 3
+                            it.quality >= Voice.QUALITY_NORMAL -> 2
+                            else -> 1
+                        }
+                    })
+                candidates.firstOrNull()?.let { tts.voice = it }
+            }
+        } catch (_: Exception) {
+            try { tts.language = Locale.US } catch (_: Exception) { }
         }
+        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) = Unit
+            override fun onError(utteranceId: String?) = Unit
+            override fun onDone(utteranceId: String?) {
+                if (handsFree) Handler(context.mainLooper).postDelayed({ startListening() }, 500)
+            }
+        })
     }
 
     fun speak(text: String) {
-        if (ready) tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "jarvis")
+        if (ready) tts.speak(text.replace(Regex("\\s+"), " ").trim(), TextToSpeech.QUEUE_FLUSH, null, "jarvis")
         else if (handsFree) scheduleRestart()
     }
 
