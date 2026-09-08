@@ -53,9 +53,7 @@ class VoiceAssistant(private val context: Context) : TextToSpeech.OnInitListener
         onStatus = status
         handsFree = true
         recognizer?.destroy()
-        recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
-            setRecognitionListener(listener)
-        }
+        recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply { setRecognitionListener(listener) }
         startListening()
     }
 
@@ -75,9 +73,7 @@ class VoiceAssistant(private val context: Context) : TextToSpeech.OnInitListener
         try {
             r.startListening(intent())
             onStatus?.invoke("Hands-free: listening for JARVIS...")
-        } catch (_: Exception) {
-            scheduleRestart()
-        }
+        } catch (_: Exception) { scheduleRestart() }
     }
 
     private fun scheduleRestart() {
@@ -94,22 +90,17 @@ class VoiceAssistant(private val context: Context) : TextToSpeech.OnInitListener
         override fun onEvent(eventType: Int, params: Bundle?) = Unit
 
         override fun onResults(results: Bundle?) {
-            val heard = results?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.trim().orEmpty()
+            val heard = results?.getStringArrayList(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.trim().orEmpty()
             val lower = heard.lowercase(Locale.getDefault())
             val marker = lower.indexOf("jarvis")
             if (marker >= 0) {
                 val command = heard.substring(marker + "jarvis".length).trim(' ', ',', '.', '!', '?')
-                if (command.isNotBlank()) {
-                    onCommand?.invoke(command)
-                    return
-                }
+                if (command.isNotBlank()) { onCommand?.invoke(command); return }
             }
             scheduleRestart()
         }
 
-        override fun onError(error: Int) {
-            scheduleRestart()
-        }
+        override fun onError(error: Int) { scheduleRestart() }
     }
 
     fun close() {
