@@ -1,0 +1,12 @@
+JARVIS / ADX setup guide
+
+1. Install Python 3.11 or newer.
+2. Create and activate a virtual environment.
+3. Install dependencies from requirement.txt.
+4. Configure required API keys as environment variables or in .env.
+5. Run the desktop assistant entry point used by your deployment.
+
+Android build:
+- Open the android/ project in Android Studio.
+- Grant microphone, notification, contacts and phone permissions as needed.
+- For screen-off hands-free operation, keep the foreground-service notification enabled and set battery usage to Unrestricted when available.
