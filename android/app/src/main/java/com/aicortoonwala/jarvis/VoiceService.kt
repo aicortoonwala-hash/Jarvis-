@@ -60,9 +60,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
 
     private fun startVoice() {
         if (active) return
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            stopSelf(); return
-        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { stopSelf(); return }
         active = true
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("JARVIS is listening")
@@ -74,9 +72,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         try {
             if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
             else startForeground(NOTIFICATION_ID, notification)
-        } catch (_: SecurityException) {
-            active = false; stopSelf(); return
-        }
+        } catch (_: SecurityException) { active = false; stopSelf(); return }
         createRecognizer()
         scheduleListening(300)
     }
@@ -110,22 +106,15 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         if (marker < 0) { scheduleListening(); return }
         val command = heard.substring(marker + 6).trim(' ', ',', '.', '!', '?')
         if (command.isBlank()) { speak("Yes, I'm listening."); return }
-
         val local = router.execute(command)
         if (!local.startsWith("I heard:")) { speak(local); return }
-
         if (isMarketCommand(command)) {
             speak("Checking the market now.")
-            serviceScope.launch {
-                val reply = market.quoteFor(command)
-                withContext(Dispatchers.Main) { speak(reply) }
-            }
+            serviceScope.launch { val reply = market.quoteFor(command); withContext(Dispatchers.Main) { speak(reply) } }
             return
         }
-
         serviceScope.launch {
-            val backend = getSharedPreferences("jarvis_settings", MODE_PRIVATE)
-                .getString("backend_url", "https://jarvis-ji6k.onrender.com/chat").orEmpty()
+            val backend = getSharedPreferences("jarvis_settings", MODE_PRIVATE).getString("backend_url", "https://jarvis-ji6k.onrender.com/chat").orEmpty()
             val reply = AiClient(backend).ask(command, memory.all())
             withContext(Dispatchers.Main) { speak(reply) }
         }
@@ -144,9 +133,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         if (ttsReady) {
             val polished = text.replace(Regex("\\s+"), " ").trim()
             tts.speak(polished, TextToSpeech.QUEUE_FLUSH, null, "jarvis_service")
-        } else {
-            speaking = false; scheduleListening()
-        }
+        } else { speaking = false; scheduleListening() }
     }
 
     override fun onInit(status: Int) {
@@ -154,27 +141,47 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         if (!ttsReady) return
         try {
             tts.language = Locale.US
-            tts.setSpeechRate(0.86f)
-            tts.setPitch(0.72f)
-            if (Build.VERSION.SDK_INT >= 21) {
-                tts.voices.orEmpty()
-                    .filter { it.locale.language == "en" && it.locale.country.equals("US", true) }
-                    .sortedWith(compareByDescending<Voice> {
-                        val n = it.name.lowercase(Locale.US)
-                        when {
-                            n.contains("male") || n.contains("man") || n.contains("m1") -> 4
-                            n.contains("local") -> 3
-                            it.quality >= Voice.QUALITY_NORMAL -> 2
-                            else -> 1
-                        }
-                    }).firstOrNull()?.let { tts.voice = it }
-            }
-        } catch (_: Exception) { try { tts.language = Locale.US } catch (_: Exception) { } }
+            // Prefer an explicitly male voice. The old logic could select a female voice
+            // when the engine did not expose the word "male" in its voice name.
+            val voices = tts.voices.orEmpty()
+                .filter { it.locale.language == "en" && it.locale.country.equals("US", true) }
+                .filterNot { isFemaleVoice(it) }
+            val preferredMale = voices
+                .map { it to maleVoiceScore(it) }
+                .filter { it.second > 0 }
+                .maxByOrNull { it.second }
+                ?.first
+            if (preferredMale != null) tts.voice = preferredMale
+            // Deeper, slower cinematic assistant delivery.
+            tts.setSpeechRate(0.82f)
+            tts.setPitch(0.58f)
+        } catch (_: Exception) {
+            try { tts.language = Locale.US; tts.setSpeechRate(0.82f); tts.setPitch(0.58f) } catch (_: Exception) { }
+        }
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) = Unit
             override fun onError(utteranceId: String?) { handler.post { speaking = false; scheduleListening(700) } }
             override fun onDone(utteranceId: String?) { handler.post { speaking = false; scheduleListening(500) } }
         })
+    }
+
+    private fun isFemaleVoice(voice: Voice): Boolean {
+        val n = voice.name.lowercase(Locale.US)
+        return n.contains("female") || n.contains("woman") || n.contains("f1") || n.contains("f2")
+    }
+
+    private fun maleVoiceScore(voice: Voice): Int {
+        val n = voice.name.lowercase(Locale.US)
+        var score = 0
+        if (n.contains("male")) score += 100
+        if (n.contains("man")) score += 80
+        if (n.contains("m1")) score += 70
+        if (n.contains("m2")) score += 60
+        if (n.contains("m3")) score += 50
+        if (n.contains("x-sfg")) score += 20
+        if (n.contains("local")) score += 5
+        if (voice.quality >= Voice.QUALITY_NORMAL) score += 3
+        return score
     }
 
     private val listener = object : RecognitionListener {
