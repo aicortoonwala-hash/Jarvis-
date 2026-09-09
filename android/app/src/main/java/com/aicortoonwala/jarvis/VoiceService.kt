@@ -42,7 +42,6 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
     private val handler = Handler(mainLooper)
     private lateinit var router: CommandRouter
     private lateinit var memory: MemoryStore
-    private val market = MarketClient()
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
@@ -55,18 +54,20 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) stopVoice() else startVoice()
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     private fun startVoice() {
         if (active) return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { stopSelf(); return }
         active = true
+        getSharedPreferences("jarvis_settings", MODE_PRIVATE).edit().putBoolean("hands_free", true).apply()
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("JARVIS is listening")
-            .setContentText("Say: Jarvis, followed by your command")
+            .setContentText("Hands-free active • Say: Jarvis, followed by anything")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
         try {
@@ -95,7 +96,9 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
             r.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, Locale.getDefault().toLanguageTag())
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
             })
         } catch (_: Exception) { scheduleListening(1200) }
     }
@@ -108,23 +111,12 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         if (command.isBlank()) { speak("Yes, I'm listening."); return }
         val local = router.execute(command)
         if (!local.startsWith("I heard:")) { speak(local); return }
-        if (isMarketCommand(command)) {
-            speak("Checking the market now.")
-            serviceScope.launch { val reply = market.quoteFor(command); withContext(Dispatchers.Main) { speak(reply) } }
-            return
-        }
         serviceScope.launch {
-            val backend = getSharedPreferences("jarvis_settings", MODE_PRIVATE).getString("backend_url", "https://jarvis-ji6k.onrender.com/chat").orEmpty()
+            val backend = getSharedPreferences("jarvis_settings", MODE_PRIVATE)
+                .getString("backend_url", "https://jarvis-ji6k.onrender.com/chat").orEmpty()
             val reply = AiClient(backend).ask(command, memory.all())
             withContext(Dispatchers.Main) { speak(reply) }
         }
-    }
-
-    private fun isMarketCommand(command: String): Boolean {
-        val c = command.lowercase(Locale.getDefault())
-        return listOf("share price", "stock price", "share bhav", "stock bhav", "share ka price", "stock ka price", "share rate", "stock rate", "share value").any { c.contains(it) }
-            || c.matches(Regex(".*\\b(price|bhav|rate)\\b.*\\b(share|stock|nifty|sensex)\\b.*"))
-            || c.matches(Regex(".*\\b(share|stock)\\b.*\\b(price|bhav|rate)\\b.*"))
     }
 
     private fun speak(text: String) {
@@ -141,18 +133,11 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         if (!ttsReady) return
         try {
             tts.language = Locale.US
-            // Prefer an explicitly male voice. The old logic could select a female voice
-            // when the engine did not expose the word "male" in its voice name.
             val voices = tts.voices.orEmpty()
                 .filter { it.locale.language == "en" && it.locale.country.equals("US", true) }
                 .filterNot { isFemaleVoice(it) }
-            val preferredMale = voices
-                .map { it to maleVoiceScore(it) }
-                .filter { it.second > 0 }
-                .maxByOrNull { it.second }
-                ?.first
+            val preferredMale = voices.map { it to maleVoiceScore(it) }.filter { it.second > 0 }.maxByOrNull { it.second }?.first
             if (preferredMale != null) tts.voice = preferredMale
-            // Deeper, slower cinematic assistant delivery.
             tts.setSpeechRate(0.82f)
             tts.setPitch(0.58f)
         } catch (_: Exception) {
@@ -201,6 +186,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
 
     private fun stopVoice() {
         active = false; speaking = false
+        getSharedPreferences("jarvis_settings", MODE_PRIVATE).edit().putBoolean("hands_free", false).apply()
         handler.removeCallbacksAndMessages(null)
         recognizer?.destroy(); recognizer = null
         stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
@@ -209,6 +195,14 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager::class.java)
             .createNotificationChannel(NotificationChannel(CHANNEL_ID, "JARVIS voice assistant", NotificationManager.IMPORTANCE_LOW))
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        val keep = getSharedPreferences("jarvis_settings", MODE_PRIVATE).getBoolean("hands_free", false)
+        if (keep) {
+            try { ContextCompat.startForegroundService(this, Intent(this, VoiceService::class.java).setAction(ACTION_START)) } catch (_: Exception) { }
+        }
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
