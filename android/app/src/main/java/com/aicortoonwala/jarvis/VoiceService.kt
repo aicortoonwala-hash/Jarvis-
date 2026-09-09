@@ -41,6 +41,8 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
     private var speaking = false
     private val handler = Handler(mainLooper)
     private lateinit var router: CommandRouter
+    private lateinit var agent: AgentClient
+    private lateinit var executor: ActionExecutor
     private lateinit var memory: MemoryStore
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -48,6 +50,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         super.onCreate()
         memory = MemoryStore(this)
         router = CommandRouter(this, memory)
+        executor = ActionExecutor(this, memory)
         tts = TextToSpeech(this, this)
         createChannel()
     }
@@ -86,6 +89,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
 
     private fun scheduleListening(delay: Long = 700) {
         if (!active || speaking) return
+        handler.removeCallbacksAndMessages(null)
         handler.postDelayed({ startListening() }, delay)
     }
 
@@ -108,14 +112,20 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         val marker = lower.indexOf("jarvis")
         if (marker < 0) { scheduleListening(); return }
         val command = heard.substring(marker + 6).trim(' ', ',', '.', '!', '?')
-        if (command.isBlank()) { speak("Yes, I'm listening."); return }
+        if (command.isBlank()) { speak("Yes. I'm listening."); return }
+
         val local = router.execute(command)
         if (!local.startsWith("I heard:")) { speak(local); return }
+
         serviceScope.launch {
-            val backend = getSharedPreferences("jarvis_settings", MODE_PRIVATE)
-                .getString("backend_url", "https://jarvis-ji6k.onrender.com/chat").orEmpty()
-            val reply = AiClient(backend).ask(command, memory.all())
-            withContext(Dispatchers.Main) { speak(reply) }
+            val saved = getSharedPreferences("jarvis_settings", MODE_PRIVATE)
+                .getString("backend_url", "https://jarvis-ji6k.onrender.com/agent").orEmpty()
+            val endpoint = if (saved.endsWith("/chat")) saved.removeSuffix("/chat") + "/agent" else saved
+            agent = AgentClient(endpoint)
+            val plan = agent.plan(command, memory.all())
+            val results = plan.actions.mapNotNull { executor.execute(it) }
+            val spoken = if (results.isNotEmpty() && plan.reply.equals("Done.", true)) results.joinToString(" ") else plan.reply
+            withContext(Dispatchers.Main) { speak(spoken) }
         }
     }
 
@@ -138,10 +148,10 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
                 .filterNot { isFemaleVoice(it) }
             val preferredMale = voices.map { it to maleVoiceScore(it) }.filter { it.second > 0 }.maxByOrNull { it.second }?.first
             if (preferredMale != null) tts.voice = preferredMale
-            tts.setSpeechRate(0.82f)
-            tts.setPitch(0.58f)
+            tts.setSpeechRate(0.80f)
+            tts.setPitch(0.56f)
         } catch (_: Exception) {
-            try { tts.language = Locale.US; tts.setSpeechRate(0.82f); tts.setPitch(0.58f) } catch (_: Exception) { }
+            try { tts.language = Locale.US; tts.setSpeechRate(0.80f); tts.setPitch(0.56f) } catch (_: Exception) { }
         }
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) = Unit
