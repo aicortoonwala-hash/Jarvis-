@@ -24,6 +24,8 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     private lateinit var voice: VoiceAssistant
     private lateinit var router: CommandRouter
+    private lateinit var agent: AgentClient
+    private lateinit var executor: ActionExecutor
     private lateinit var memory: MemoryStore
     private val weather = WeatherClient()
     private lateinit var location: LocationHelper
@@ -43,23 +45,26 @@ class MainActivity : ComponentActivity() {
         memory = MemoryStore(this)
         location = LocationHelper(this)
         router = CommandRouter(this, memory)
+        agent = AgentClient(settings.getString("backend_url", "https://jarvis-ji6k.onrender.com/agent").orEmpty())
+        executor = ActionExecutor(this, memory)
         setContent { JarvisApp() }
-        val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CALL_PHONE, Manifest.permission.READ_CONTACTS)
+        val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CALL_PHONE, Manifest.permission.READ_CONTACTS, Manifest.permission.SEND_SMS)
         if (Build.VERSION.SDK_INT >= 33) permissions += Manifest.permission.POST_NOTIFICATIONS
         if (permissions.any { !hasPermission(it) }) permissionLauncher.launch(permissions.toTypedArray())
     }
 
     override fun onResume() {
         super.onResume()
-        // Do not automatically start a microphone foreground service from onResume.
-        // Android can reject a microphone FGS start during lifecycle transitions and
-        // this also caused an install/open crash loop when hands_free was persisted.
-        val enabled = settings.getBoolean("hands_free", false)
-        if (enabled) setStatus("Hands-free is saved. Tap HANDS-FREE to start listening.")
+        if (settings.getBoolean("hands_free", false)) setStatus("Hands-free is saved. Tap HANDS-FREE to start listening.")
     }
 
     private fun hasPermission(permission: String): Boolean = ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
     private fun setStatus(value: String) { status?.invoke(value) }
+
+    private fun backendAgent(): AgentClient {
+        val url = settings.getString("backend_url", "https://jarvis-ji6k.onrender.com/agent").orEmpty()
+        return AgentClient(if (url.endsWith("/chat")) url.removeSuffix("/chat") + "/agent" else url)
+    }
 
     private fun startVoiceService() {
         if (!hasPermission(Manifest.permission.RECORD_AUDIO)) {
@@ -83,11 +88,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openBatterySettings() {
-        try {
-            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
-        } catch (_: Exception) {
-            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-        }
+        try { startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))) }
+        catch (_: Exception) { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
         setStatus("Set JARVIS battery usage to Unrestricted, then keep the notification active.")
     }
 
@@ -95,17 +97,15 @@ class MainActivity : ComponentActivity() {
         val clean = command.trim()
         if (clean.isBlank()) return
         val local = router.execute(clean)
-        if (!local.startsWith("I heard:")) {
-            setStatus(local)
-            voice.speak(local)
-            return
-        }
+        if (!local.startsWith("I heard:")) { setStatus(local); voice.speak(local); return }
         if (isWeatherCommand(clean)) { getWeather(); return }
-        setStatus("Thinking and searching the web if needed...")
+        setStatus("JARVIS is thinking...")
         lifecycleScope.launch {
-            val reply = AiClient(settings.getString("backend_url", "https://jarvis-ji6k.onrender.com/chat").orEmpty()).ask(clean, memory.all())
-            setStatus(reply)
-            voice.speak(reply)
+            val plan = backendAgent().plan(clean, memory.all())
+            val results = plan.actions.mapNotNull { executor.execute(it) }
+            val spoken = if (results.isNotEmpty() && plan.reply.equals("Done.", true)) results.joinToString(" ") else plan.reply
+            setStatus(spoken)
+            voice.speak(spoken)
         }
     }
 
@@ -117,21 +117,12 @@ class MainActivity : ComponentActivity() {
     private fun getWeather() {
         if (!hasLocationPermission()) {
             setStatus("Location permission is needed for local weather.")
-            locationPermission.launch(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION))
-            return
+            locationPermission.launch(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)); return
         }
         val coords = location.lastLocation()
-        if (coords == null) {
-            setStatus("I can't get your phone location yet. Turn on Location and try again.")
-            voice.speak("I can't get your phone location yet.")
-            return
-        }
+        if (coords == null) { setStatus("Turn on Location and try again."); voice.speak("Turn on Location and try again."); return }
         setStatus("Getting current weather...")
-        lifecycleScope.launch {
-            val reply = weather.current(coords.first, coords.second)
-            setStatus(reply)
-            voice.speak(reply)
-        }
+        lifecycleScope.launch { val reply = weather.current(coords.first, coords.second); setStatus(reply); voice.speak(reply) }
     }
 
     private fun onLocationReady() { if (hasLocationPermission()) getWeather() }
@@ -140,15 +131,15 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun JarvisApp() {
         var command by remember { mutableStateOf("") }
-        var message by remember { mutableStateOf("JARVIS Android online") }
-        var backendUrl by remember { mutableStateOf(settings.getString("backend_url", "https://jarvis-ji6k.onrender.com/chat") ?: "") }
+        var message by remember { mutableStateOf("JARVIS Android online • Agent mode") }
+        var backendUrl by remember { mutableStateOf(settings.getString("backend_url", "https://jarvis-ji6k.onrender.com/agent") ?: "") }
         var handsFree by remember { mutableStateOf(settings.getBoolean("hands_free", false)) }
         status = { message = it }
         DisposableEffect(Unit) { onDispose { status = null } }
         MaterialTheme {
             Column(Modifier.fillMaxSize().background(Color.Black).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Text("JARVIS", color = Color.Cyan, style = MaterialTheme.typography.displaySmall)
-                Text("Android edition • Web-grounded AI", color = Color.LightGray)
+                Text("Super Agent • web + voice + phone actions", color = Color.LightGray)
                 OutlinedTextField(command, { command = it }, Modifier.fillMaxWidth(), label = { Text("Ask JARVIS anything") }, singleLine = true)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(onClick = { if (command.isNotBlank()) onCommand(command) }) { Text("EXECUTE") }
@@ -160,17 +151,13 @@ class MainActivity : ComponentActivity() {
                     else { startVoiceService(); handsFree = true }
                 }) { Text(if (handsFree) "HANDS-FREE ON" else "HANDS-FREE OFF") }
                 Button(onClick = { openBatterySettings() }) { Text("KEEP JARVIS ON IN BACKGROUND") }
-                OutlinedTextField(value = backendUrl, onValueChange = { backendUrl = it }, modifier = Modifier.fillMaxWidth(), label = { Text("AI backend URL") }, singleLine = true)
-                Button(onClick = { settings.edit().putString("backend_url", backendUrl.trim()).apply(); setStatus("Backend URL saved.") }) { Text("SAVE BACKEND") }
+                OutlinedTextField(value = backendUrl, onValueChange = { backendUrl = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Agent backend URL") }, singleLine = true)
+                Button(onClick = { settings.edit().putString("backend_url", backendUrl.trim()).apply(); setStatus("Agent backend saved.") }) { Text("SAVE BACKEND") }
                 Text(message, color = Color.Green)
-                Text("For screen-off hands-free: start HANDS-FREE while JARVIS is visible, keep the notification visible, and set Battery usage to Unrestricted.", color = Color.Gray)
+                Text("Voice commands can answer questions, search the live web, open apps, play/search YouTube, call, SMS, maps, camera, flashlight, volume, alarms, timers, settings and memory.", color = Color.Gray)
             }
         }
     }
 
-    override fun onDestroy() {
-        status = null
-        voice.close()
-        super.onDestroy()
-    }
+    override fun onDestroy() { status = null; voice.close(); super.onDestroy() }
 }
