@@ -7,21 +7,11 @@ from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 
-app = FastAPI(title="JARVIS AI Backend", version="0.6.2")
+app = FastAPI(title="JARVIS AI Backend", version="0.6.3")
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
+MODEL_CANDIDATES = list(dict.fromkeys([MODEL, "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]))
 
-BASE_SYSTEM_PROMPT = os.getenv(
-    "JARVIS_SYSTEM_PROMPT",
-    "You are JARVIS, an advanced Android voice assistant. "
-    "Speak naturally like a calm, intelligent human assistant, not like a chatbot. "
-    "Answer in the user's language; use Hindi/Hinglish when the user does. "
-    "Be direct and conversational because your answer will be spoken aloud. "
-    "You have Google Search. Use it for current, live, niche, price, news, sports, product, person, place, weather, market, or otherwise time-sensitive facts. "
-    "Never call current information unavailable before searching. For Indian stocks/indexes, search for the latest available quote and clearly state when the market is closed or a quote is delayed. "
-    "Use memory only when relevant. Do not invent personal facts. "
-    "The Android device can execute a limited set of safe phone actions. Never claim an action happened unless you return that action for the Android app to execute. "
-    "For explicit commands to call or send an SMS, create the corresponding action. For dangerous, irreversible, financial, security, or privacy-sensitive actions, do not invent an execution capability. "
-)
+BASE_SYSTEM_PROMPT = os.getenv("JARVIS_SYSTEM_PROMPT", "You are JARVIS, an advanced Android voice assistant. Speak naturally like a calm, intelligent human assistant, not like a chatbot. Answer in the user's language; use Hindi/Hinglish when the user does. Be direct and conversational because your answer will be spoken aloud. You have Google Search. Use it for current, live, niche, price, news, sports, product, person, place, weather, market, or otherwise time-sensitive facts. Never call current information unavailable before searching. For Indian stocks/indexes, search for the latest available quote and clearly state when the market is closed or a quote is delayed. Use memory only when relevant. Do not invent personal facts. The Android device can execute a limited set of safe phone actions. Never claim an action happened unless you return that action for the Android app to execute. For explicit commands to call or send an SMS, create the corresponding action. For dangerous, irreversible, financial, security, or privacy-sensitive actions, do not invent an execution capability.")
 
 ACTION_RULES = """
 You are also an action planner. Return ONLY valid JSON, with no markdown and no extra text:
@@ -87,36 +77,39 @@ def gemini(prompt: str, system_instruction: str):
         raise HTTPException(status_code=503, detail="GEMINI_API_KEY is not configured")
 
     client = genai.Client(api_key=api_key)
+    errors = []
 
-    try:
-        return client.models.generate_content(
-            model=MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-            ),
-        )
-    except Exception as grounded_exc:
-        print(f"Gemini grounded request failed: {type(grounded_exc).__name__}: {safe_error(grounded_exc)}")
+    # Temporary Gemini 503/capacity errors should not take JARVIS down.
+    # Try the configured model first, then current stable Flash fallbacks.
+    for model_name in MODEL_CANDIDATES:
         try:
-            return client.models.generate_content(
-                model=MODEL,
+            response = client.models.generate_content(
+                model=model_name,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
                 ),
             )
+            print(f"Gemini grounded request succeeded with {model_name}")
+            return response, model_name
+        except Exception as grounded_exc:
+            errors.append(f"{model_name} grounded: {safe_error(grounded_exc)}")
+            print(f"Gemini grounded request failed on {model_name}: {type(grounded_exc).__name__}: {safe_error(grounded_exc)}")
+
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(system_instruction=system_instruction),
+            )
+            print(f"Gemini plain request succeeded with {model_name}")
+            return response, model_name
         except Exception as plain_exc:
-            print(f"Gemini plain request failed: {type(plain_exc).__name__}: {safe_error(plain_exc)}")
-            raise HTTPException(
-                status_code=502,
-                detail={
-                    "message": "Gemini request failed",
-                    "error_type": type(plain_exc).__name__,
-                    "error": safe_error(plain_exc),
-                },
-            ) from plain_exc
+            errors.append(f"{model_name} plain: {safe_error(plain_exc)}")
+            print(f"Gemini plain request failed on {model_name}: {type(plain_exc).__name__}: {safe_error(plain_exc)}")
+
+    raise HTTPException(status_code=502, detail={"message": "All Gemini model attempts failed", "configured_model": MODEL, "tried_models": MODEL_CANDIDATES, "errors": errors[-8:]})
 
 
 def clean_json(text: str) -> dict:
@@ -133,27 +126,25 @@ def clean_json(text: str) -> dict:
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": MODEL, "gemini_configured": bool(os.getenv("GEMINI_API_KEY")), "web_search": True, "agent": True}
+    return {"status": "ok", "model": MODEL, "fallback_models": MODEL_CANDIDATES[1:], "gemini_configured": bool(os.getenv("GEMINI_API_KEY")), "web_search": True, "agent": True}
 
 
 @app.get("/gemini-health")
 def gemini_health():
-    """Actually test Gemini connectivity without exposing the API key."""
     if not os.getenv("GEMINI_API_KEY"):
         return {"status": "error", "model": MODEL, "gemini_configured": False, "error": "GEMINI_API_KEY is not configured"}
     try:
-        response = gemini("Reply with exactly: JARVIS_OK", "Reply with exactly JARVIS_OK.")
-        text = (response.text or "").strip()
-        return {"status": "ok", "model": MODEL, "gemini_configured": True, "reply": text[:100]}
+        response, used_model = gemini("Reply with exactly: JARVIS_OK", "Reply with exactly JARVIS_OK.")
+        return {"status": "ok", "configured_model": MODEL, "working_model": used_model, "gemini_configured": True, "reply": (response.text or "").strip()[:100]}
     except HTTPException as exc:
-        return {"status": "error", "model": MODEL, "gemini_configured": True, "error": exc.detail}
+        return {"status": "error", "configured_model": MODEL, "gemini_configured": True, "error": exc.detail}
     except Exception as exc:
-        return {"status": "error", "model": MODEL, "gemini_configured": True, "error_type": type(exc).__name__, "error": safe_error(exc)}
+        return {"status": "error", "configured_model": MODEL, "gemini_configured": True, "error_type": type(exc).__name__, "error": safe_error(exc)}
 
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
-    response = gemini(request.prompt.strip() + memory_context(request.memories), BASE_SYSTEM_PROMPT)
+    response, _ = gemini(request.prompt.strip() + memory_context(request.memories), BASE_SYSTEM_PROMPT)
     reply = (response.text or "").strip()
     if not reply:
         raise HTTPException(status_code=502, detail="Gemini returned an empty response")
@@ -163,11 +154,11 @@ def chat(request: ChatRequest):
 @app.post("/agent", response_model=AgentResponse)
 def agent(request: ChatRequest):
     prompt = request.prompt.strip() + memory_context(request.memories)
-    response = gemini(prompt, BASE_SYSTEM_PROMPT + "\n" + ACTION_RULES)
+    response, _ = gemini(prompt, BASE_SYSTEM_PROMPT + "\n" + ACTION_RULES)
     try:
         data = clean_json(response.text or "")
     except Exception:
-        fallback = gemini(prompt, BASE_SYSTEM_PROMPT)
+        fallback, _ = gemini(prompt, BASE_SYSTEM_PROMPT)
         return AgentResponse(reply=(fallback.text or "I couldn't complete that.").strip(), actions=[])
 
     reply = str(data.get("reply", "")).strip() or "Done."
@@ -181,10 +172,5 @@ def agent(request: ChatRequest):
             typ = str(item.get("type", "")).strip().lower()
             if typ not in allowed:
                 continue
-            actions.append({
-                "type": typ,
-                "target": str(item.get("target", "")).strip(),
-                "text": str(item.get("text", "")).strip(),
-                "value": str(item.get("value", "")).strip(),
-            })
+            actions.append({"type": typ, "target": str(item.get("target", "")).strip(), "text": str(item.get("text", "")).strip(), "value": str(item.get("value", "")).strip()})
     return AgentResponse(reply=reply, actions=actions[:4])
