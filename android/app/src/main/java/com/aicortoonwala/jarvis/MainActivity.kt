@@ -48,7 +48,7 @@ class MainActivity : ComponentActivity() {
         agent = AgentClient(settings.getString("backend_url", "https://jarvis-ji6k.onrender.com/agent").orEmpty())
         executor = ActionExecutor(this, memory)
         setContent { JarvisApp() }
-        val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CALL_PHONE, Manifest.permission.READ_CONTACTS, Manifest.permission.SEND_SMS)
+        val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= 33) permissions += Manifest.permission.POST_NOTIFICATIONS
         if (permissions.any { !hasPermission(it) }) permissionLauncher.launch(permissions.toTypedArray())
     }
@@ -154,7 +154,7 @@ class MainActivity : ComponentActivity() {
                 OutlinedTextField(value = backendUrl, onValueChange = { backendUrl = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Agent backend URL") }, singleLine = true)
                 Button(onClick = { settings.edit().putString("backend_url", backendUrl.trim()).apply(); setStatus("Agent backend saved.") }) { Text("SAVE BACKEND") }
                 Text(message, color = Color.Green)
-                Text("Voice commands can answer questions, search the live web, open apps, play/search YouTube, call, SMS, maps, camera, flashlight, volume, alarms, timers, settings and memory.", color = Color.Gray)
+                Text("Voice commands can answer questions, search the live web, open apps, play/search YouTube, maps, camera, flashlight, volume, alarms, timers, settings and memory.", color = Color.Gray)
             }
         }
     }
