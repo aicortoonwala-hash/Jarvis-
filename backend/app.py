@@ -3,14 +3,21 @@ import os
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from google import genai
+from google.genai import types
 
-app = FastAPI(title="JARVIS AI Backend", version="0.3.0")
+app = FastAPI(title="JARVIS AI Backend", version="0.4.0")
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
 SYSTEM_PROMPT = os.getenv(
     "JARVIS_SYSTEM_PROMPT",
-    "You are JARVIS, a helpful Android voice assistant. Be concise, practical, and friendly. "
-    "When the user asks for an action, explain the safe Android action they can take if the phone app must confirm it.",
+    "You are JARVIS, a highly capable Android voice assistant. "
+    "Answer in the user's language (Hindi/Hinglish if they use Hindi/Hinglish). "
+    "Be concise when speaking, but give the useful answer directly. "
+    "You have access to Google Search. Use it whenever the question needs current, live, niche, factual, price, news, sports, product, person, place, or otherwise up-to-date information. "
+    "Never say information is unavailable merely because it is current; search the web first. "
+    "For stock/index prices, search for the latest available Indian market price and clearly say if the market is closed or the quote is delayed. "
+    "For requests such as play/lagao/chalao a cartoon, song, video, or topic, understand the user's intent and give a useful action-oriented answer. "
+    "Do not claim to have physically changed something on the phone unless the Android app actually performed that action.",
 )
 
 
@@ -25,7 +32,7 @@ class ChatResponse(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": MODEL, "gemini_configured": bool(os.getenv("GEMINI_API_KEY"))}
+    return {"status": "ok", "model": MODEL, "gemini_configured": bool(os.getenv("GEMINI_API_KEY")), "web_search": True}
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -46,7 +53,10 @@ def chat(request: ChatRequest):
         response = client.models.generate_content(
             model=MODEL,
             contents=prompt,
-            config={"system_instruction": SYSTEM_PROMPT},
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+            ),
         )
         reply = (response.text or "").strip()
         if not reply:
@@ -55,6 +65,5 @@ def chat(request: ChatRequest):
     except HTTPException:
         raise
     except Exception as exc:
-        # Keep provider internals out of the Android response.
         print(f"Gemini request failed: {type(exc).__name__}")
         raise HTTPException(status_code=502, detail="Gemini request failed") from exc
