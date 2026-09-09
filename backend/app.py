@@ -1,12 +1,13 @@
 import json
 import os
+import re
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 
-app = FastAPI(title="JARVIS AI Backend", version="0.6.1")
+app = FastAPI(title="JARVIS AI Backend", version="0.6.2")
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
 
 BASE_SYSTEM_PROMPT = os.getenv(
@@ -74,6 +75,12 @@ def memory_context(memories: dict[str, str]) -> str:
     return "\nRelevant user memory:\n" + "\n".join(f"{k}: {v}" for k, v in memories.items())[:6000]
 
 
+def safe_error(exc: Exception) -> str:
+    message = str(exc).replace("\n", " ").strip()
+    message = re.sub(r"AIza[0-9A-Za-z_-]+", "[REDACTED_KEY]", message)
+    return message[:500] or type(exc).__name__
+
+
 def gemini(prompt: str, system_instruction: str):
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -81,9 +88,6 @@ def gemini(prompt: str, system_instruction: str):
 
     client = genai.Client(api_key=api_key)
 
-    # First try live Google Search grounding. If the grounding tool is temporarily
-    # unavailable, fall back to a normal Gemini response instead of breaking JARVIS
-    # with HTTP 502. This keeps ordinary questions and action planning working.
     try:
         return client.models.generate_content(
             model=MODEL,
@@ -94,7 +98,7 @@ def gemini(prompt: str, system_instruction: str):
             ),
         )
     except Exception as grounded_exc:
-        print(f"Gemini grounded request failed: {type(grounded_exc).__name__}")
+        print(f"Gemini grounded request failed: {type(grounded_exc).__name__}: {safe_error(grounded_exc)}")
         try:
             return client.models.generate_content(
                 model=MODEL,
@@ -104,8 +108,15 @@ def gemini(prompt: str, system_instruction: str):
                 ),
             )
         except Exception as plain_exc:
-            print(f"Gemini plain request failed: {type(plain_exc).__name__}")
-            raise HTTPException(status_code=502, detail="Gemini request failed") from plain_exc
+            print(f"Gemini plain request failed: {type(plain_exc).__name__}: {safe_error(plain_exc)}")
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": "Gemini request failed",
+                    "error_type": type(plain_exc).__name__,
+                    "error": safe_error(plain_exc),
+                },
+            ) from plain_exc
 
 
 def clean_json(text: str) -> dict:
@@ -123,6 +134,21 @@ def clean_json(text: str) -> dict:
 @app.get("/health")
 def health():
     return {"status": "ok", "model": MODEL, "gemini_configured": bool(os.getenv("GEMINI_API_KEY")), "web_search": True, "agent": True}
+
+
+@app.get("/gemini-health")
+def gemini_health():
+    """Actually test Gemini connectivity without exposing the API key."""
+    if not os.getenv("GEMINI_API_KEY"):
+        return {"status": "error", "model": MODEL, "gemini_configured": False, "error": "GEMINI_API_KEY is not configured"}
+    try:
+        response = gemini("Reply with exactly: JARVIS_OK", "Reply with exactly JARVIS_OK.")
+        text = (response.text or "").strip()
+        return {"status": "ok", "model": MODEL, "gemini_configured": True, "reply": text[:100]}
+    except HTTPException as exc:
+        return {"status": "error", "model": MODEL, "gemini_configured": True, "error": exc.detail}
+    except Exception as exc:
+        return {"status": "error", "model": MODEL, "gemini_configured": True, "error_type": type(exc).__name__, "error": safe_error(exc)}
 
 
 @app.post("/chat", response_model=ChatResponse)
