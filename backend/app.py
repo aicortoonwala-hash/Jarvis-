@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 
-app = FastAPI(title="JARVIS AI Backend", version="0.6.0")
+app = FastAPI(title="JARVIS AI Backend", version="0.6.1")
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
 
 BASE_SYSTEM_PROMPT = os.getenv(
@@ -78,8 +78,13 @@ def gemini(prompt: str, system_instruction: str):
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise HTTPException(status_code=503, detail="GEMINI_API_KEY is not configured")
+
+    client = genai.Client(api_key=api_key)
+
+    # First try live Google Search grounding. If the grounding tool is temporarily
+    # unavailable, fall back to a normal Gemini response instead of breaking JARVIS
+    # with HTTP 502. This keeps ordinary questions and action planning working.
     try:
-        client = genai.Client(api_key=api_key)
         return client.models.generate_content(
             model=MODEL,
             contents=prompt,
@@ -88,11 +93,19 @@ def gemini(prompt: str, system_instruction: str):
                 tools=[types.Tool(google_search=types.GoogleSearch())],
             ),
         )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        print(f"Gemini request failed: {type(exc).__name__}")
-        raise HTTPException(status_code=502, detail="Gemini request failed") from exc
+    except Exception as grounded_exc:
+        print(f"Gemini grounded request failed: {type(grounded_exc).__name__}")
+        try:
+            return client.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                ),
+            )
+        except Exception as plain_exc:
+            print(f"Gemini plain request failed: {type(plain_exc).__name__}")
+            raise HTTPException(status_code=502, detail="Gemini request failed") from plain_exc
 
 
 def clean_json(text: str) -> dict:
