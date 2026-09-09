@@ -3,8 +3,10 @@ package com.aicortoonwala.jarvis
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,7 +26,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var router: CommandRouter
     private lateinit var memory: MemoryStore
     private val weather = WeatherClient()
-    private val market = MarketClient()
     private lateinit var location: LocationHelper
     private val settings by lazy { getSharedPreferences("jarvis_settings", MODE_PRIVATE) }
     private val speech = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -59,27 +60,32 @@ class MainActivity : ComponentActivity() {
         if (!hasPermission(Manifest.permission.RECORD_AUDIO)) { setStatus("Microphone permission is required."); permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO)); return }
         settings.edit().putBoolean("hands_free", true).apply()
         try { ContextCompat.startForegroundService(this, Intent(this, VoiceService::class.java).setAction(VoiceService.ACTION_START)); setStatus("JARVIS hands-free is ON. Say: Jarvis, ...") }
-        catch (_: Exception) { settings.edit().putBoolean("hands_free", false).apply(); setStatus("Hands-free could not start. Check microphone and notification permissions.") }
+        catch (_: Exception) { setStatus("Hands-free could not start. Allow microphone and battery unrestricted.") }
     }
 
     private fun stopVoiceService() { settings.edit().putBoolean("hands_free", false).apply(); startService(Intent(this, VoiceService::class.java).setAction(VoiceService.ACTION_STOP)); setStatus("Hands-free off") }
+
+    private fun openBatterySettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+        } catch (_: Exception) {
+            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        }
+        setStatus("Set JARVIS battery usage to Unrestricted, then keep the notification active.")
+    }
 
     private fun onCommand(command: String) {
         val clean = command.trim(); if (clean.isBlank()) return
         val local = router.execute(clean)
         if (!local.startsWith("I heard:")) { setStatus(local); voice.speak(local); return }
         if (isWeatherCommand(clean)) { getWeather(); return }
-        if (isMarketCommand(clean)) { setStatus("Checking market price..."); lifecycleScope.launch { val reply = market.quoteFor(clean); setStatus(reply); voice.speak(reply) }; return }
-        setStatus("Thinking...")
-        lifecycleScope.launch { val reply = AiClient(settings.getString("backend_url", "https://jarvis-ji6k.onrender.com/chat").orEmpty()).ask(clean, memory.all()); setStatus(reply); voice.speak(reply) }
+        setStatus("Thinking and searching the web if needed...")
+        lifecycleScope.launch {
+            val reply = AiClient(settings.getString("backend_url", "https://jarvis-ji6k.onrender.com/chat").orEmpty()).ask(clean, memory.all())
+            setStatus(reply); voice.speak(reply)
+        }
     }
 
-    private fun isMarketCommand(command: String): Boolean {
-        val c = command.lowercase()
-        return listOf("share price", "stock price", "share bhav", "stock bhav", "share ka price", "stock ka price", "share rate", "stock rate", "share value").any { c.contains(it) }
-            || c.matches(Regex(".*\\b(price|bhav|rate)\\b.*\\b(share|stock|nifty|sensex)\\b.*"))
-            || c.matches(Regex(".*\\b(share|stock)\\b.*\\b(price|bhav|rate)\\b.*"))
-    }
     private fun isWeatherCommand(command: String): Boolean { val c = command.lowercase(); return c.contains("weather") || c.contains("temperature") || c.contains("mausam") || c.contains("taapman") }
 
     private fun getWeather() {
@@ -100,14 +106,15 @@ class MainActivity : ComponentActivity() {
         DisposableEffect(Unit) { onDispose { status = null } }
         MaterialTheme { Column(Modifier.fillMaxSize().background(Color.Black).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text("JARVIS", color = Color.Cyan, style = MaterialTheme.typography.displaySmall)
-            Text("Android edition • Hybrid AI", color = Color.LightGray)
-            OutlinedTextField(command, { command = it }, Modifier.fillMaxWidth(), label = { Text("Ask JARVIS") }, singleLine = true)
+            Text("Android edition • Web-grounded AI", color = Color.LightGray)
+            OutlinedTextField(command, { command = it }, Modifier.fillMaxWidth(), label = { Text("Ask JARVIS anything") }, singleLine = true)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { Button(onClick = { if (command.isNotBlank()) onCommand(command) }) { Text("EXECUTE") }; Button(onClick = { if (hasPermission(Manifest.permission.RECORD_AUDIO)) speech.launch(voice.intent()) else permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO)) }) { Text("MIC") } }
             Button(onClick = { if (!hasPermission(Manifest.permission.RECORD_AUDIO)) permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO)) else if (handsFree) { stopVoiceService(); handsFree = false } else { startVoiceService(); handsFree = true } }) { Text(if (handsFree) "HANDS-FREE ON" else "HANDS-FREE OFF") }
+            Button(onClick = { openBatterySettings() }) { Text("KEEP JARVIS ON IN BACKGROUND") }
             OutlinedTextField(value = backendUrl, onValueChange = { backendUrl = it }, modifier = Modifier.fillMaxWidth(), label = { Text("AI backend URL") }, singleLine = true)
             Button(onClick = { settings.edit().putString("backend_url", backendUrl.trim()).apply(); setStatus("Backend URL saved.") }) { Text("SAVE BACKEND") }
             Text(message, color = Color.Green)
-            Text("Screen-off: keep JARVIS notification active and set Battery usage to Unrestricted.", color = Color.Gray)
+            Text("For screen-off hands-free: keep the JARVIS notification visible and set Battery usage to Unrestricted.", color = Color.Gray)
         } }
     }
     override fun onDestroy() { status = null; voice.close(); super.onDestroy() }
